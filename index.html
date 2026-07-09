@@ -978,7 +978,8 @@ html, body { margin: 0; padding: 0; background: #000; }
     const ok = await saveTables();
     if (!ok) alert('No se pudo guardar. Revisa tu conexión e intenta de nuevo.');
     await refreshRequests();
-    state.requests = state.requests.map(r => (String(r.table) === String(id) && r.status === 'pending') ? Object.assign({}, r, { status: 'cancelled' }) : r);
+    // Borrar TODO el historial de esa mesa/barra para que el siguiente grupo entre limpio
+    state.requests = state.requests.filter(r => String(r.table) !== String(id));
     await saveRequests();
     if (String(state.msgOpenFor) === String(id)) state.msgOpenFor = null;
     updateStaffSeats();
