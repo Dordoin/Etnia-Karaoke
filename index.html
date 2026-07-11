@@ -589,6 +589,9 @@ html, body { margin: 0; padding: 0; background: #000; }
 }
 .kw-editform input:focus { border-color: var(--lime-deep); }
 
+/* ---- zona de última ronda (admin) ---- */
+.kw-lastround { width: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: -14px 0 26px; }
+
 /* ---- estado "ya cantó" en tarjetas del staff ---- */
 .kw-tcard.live.sang { border-color: #D8383E; box-shadow: 0 0 0 1px rgba(216,56,62,.28), 0 10px 24px rgba(216,56,62,.08); }
 .kw-sang-tag { font-family: 'Space Mono', monospace; font-size: 10px; letter-spacing: 1.5px; color: #FF8A8E; font-weight: 700; }
@@ -648,6 +651,8 @@ html, body { margin: 0; padding: 0; background: #000; }
       { name: 'Los Olivos', text: 'Av. César Vallejo 899 A Int. 3 — Los Olivos' },
       { name: 'Independencia', text: 'Calle 1 #159 Int. 2 — Independencia' },
     ],
+    // 📢 Mensaje que se envía a TODAS las mesas abiertas al anunciar última ronda
+    lastRoundMessage: '📢 ¡ÚLTIMA RONDA DE KARAOKE! 🎤 Pide tu última canción antes de que termine la noche.',
     // 🍹 CARTA EXPRESS: edita productos, descripciones y precios aquí
     menu: {
       cocteles: [
@@ -693,6 +698,9 @@ html, body { margin: 0; padding: 0; background: #000; }
     dismissedMsgId: null,
     editingId: null,      // pedido en edición por el cliente
     cartaOpen: false,     // carta express abierta
+    roundArmed: false,    // confirmación de reiniciar ronda
+    lastRoundArmed: false, // confirmación de anunciar última ronda
+    lastRoundSent: false,
   };
 
   let pollTimer = null;
@@ -1203,6 +1211,43 @@ html, body { margin: 0; padding: 0; background: #000; }
     updateStaffQueue();
   };
   KW.toggleHistory = function () { state.showHistory = !state.showHistory; updateStaffQueue(); };
+  // Reiniciar RONDA: desmarcar "ya cantó" en todas las mesas y barras
+  KW.armRound = function () { state.roundArmed = true; state.resetArmed = false; updateAdminShellButtons(); };
+  KW.cancelRound = function () { state.roundArmed = false; updateAdminShellButtons(); };
+  KW.confirmRound = async function () {
+    if (isWaiter()) return;
+    await refreshTables();
+    Object.keys(state.tables).forEach(id => {
+      if (id !== '_now' && state.tables[id] && state.tables[id].sang) state.tables[id].sang = false;
+    });
+    const ok = await saveTables();
+    if (!ok) alert('No se pudo guardar, intenta de nuevo.');
+    state.roundArmed = false;
+    updateStaffSeats();
+    updateAdminShellButtons();
+  };
+  // Anunciar ÚLTIMA RONDA: mensaje a todas las mesas/barras abiertas
+  KW.armLastRound = function () { state.lastRoundArmed = true; updateLastRound(); };
+  KW.cancelLastRound = function () { state.lastRoundArmed = false; updateLastRound(); };
+  KW.confirmLastRound = async function () {
+    if (isWaiter()) return;
+    await refreshTables();
+    let count = 0;
+    Object.keys(state.tables).forEach(id => {
+      const t = state.tables[id];
+      if (id !== '_now' && t && t.status === 'occupied') {
+        t.message = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 5), text: CONFIG.lastRoundMessage, time: Date.now() };
+        count++;
+      }
+    });
+    if (count === 0) { alert('No hay mesas abiertas para anunciar.'); state.lastRoundArmed = false; updateLastRound(); return; }
+    const ok = await saveTables();
+    if (!ok) { alert('No se pudo enviar el anuncio, intenta de nuevo.'); return; }
+    state.lastRoundArmed = false;
+    state.lastRoundSent = true;
+    updateLastRound();
+    setTimeout(() => { state.lastRoundSent = false; updateLastRound(); }, 3500);
+  };
   KW.armReset = function () { state.resetArmed = true; updateAdminShellButtons(); };
   KW.cancelReset = function () { state.resetArmed = false; updateAdminShellButtons(); };
   KW.confirmReset = async function () {
@@ -1417,11 +1462,33 @@ html, body { margin: 0; padding: 0; background: #000; }
   function updateAdminShellButtons() {
     const el = document.getElementById('kw-reset-zone');
     if (!el) return;
-    el.innerHTML = state.resetArmed
-      ? `<span style="font-size:12.5px;color:var(--fog);margin-right:8px;">¿Borrar todas las mesas, la barra y la cola?</span>
+    if (state.resetArmed) {
+      el.innerHTML = `<span style="font-size:12.5px;color:var(--fog);margin-right:8px;">¿Borrar todas las mesas, la barra y la cola?</span>
          <button class="kw-btn danger sm" onclick="KW.confirmReset()">Sí, reiniciar</button>
-         <button class="kw-btn ghost sm" onclick="KW.cancelReset()">Cancelar</button>`
-      : `<button class="kw-link" onclick="KW.armReset()">Reiniciar noche</button>`;
+         <button class="kw-btn ghost sm" onclick="KW.cancelReset()">Cancelar</button>`;
+    } else if (state.roundArmed) {
+      el.innerHTML = `<span style="font-size:12.5px;color:var(--fog);margin-right:8px;">¿Desmarcar "ya cantó" en todas las mesas y barras?</span>
+         <button class="kw-btn lime sm" onclick="KW.confirmRound()">Sí, nueva ronda</button>
+         <button class="kw-btn ghost sm" onclick="KW.cancelRound()">Cancelar</button>`;
+    } else {
+      el.innerHTML = `<button class="kw-link" onclick="KW.armRound()">🔄 Reiniciar ronda</button>
+         <button class="kw-link" onclick="KW.armReset()">Reiniciar noche</button>`;
+    }
+  }
+
+  // Zona del anuncio de última ronda
+  function updateLastRound() {
+    const el = document.getElementById('kw-lastround-zone');
+    if (!el) return;
+    if (state.lastRoundSent) {
+      el.innerHTML = `<span class="kw-sent-note">📢 AVISO DE ÚLTIMA RONDA ENVIADO A TODAS LAS MESAS ✓</span>`;
+    } else if (state.lastRoundArmed) {
+      el.innerHTML = `<span style="font-size:12.5px;color:var(--fog);">¿Anunciar la última ronda a todas las mesas abiertas?</span>
+        <button class="kw-btn lime sm" onclick="KW.confirmLastRound()">Sí, anunciar</button>
+        <button class="kw-btn ghost sm" onclick="KW.cancelLastRound()">Cancelar</button>`;
+    } else {
+      el.innerHTML = `<button class="kw-btn outline-lime sm" onclick="KW.armLastRound()">📢 Anunciar ÚLTIMA RONDA</button>`;
+    }
   }
 
   // Control "ahora canta" (solo en el panel de admin)
@@ -1621,7 +1688,7 @@ html, body { margin: 0; padding: 0; background: #000; }
     if (state.view === 'login') root.innerHTML = viewLogin();
     else if (state.view === 'staffLogin') root.innerHTML = viewStaffLogin();
     else if (state.view === 'customer') { root.innerHTML = viewCustomer(); updateNowLine(); updateMyQueue(); updateMsgBanner(); updateRoundMap(); updateCarta(); }
-    else if (state.view === 'admin') { root.innerHTML = viewAdmin(); updateStaffSeats(); updateStaffQueue(); updateAdminShellButtons(); updateNowControl(); }
+    else if (state.view === 'admin') { root.innerHTML = viewAdmin(); updateStaffSeats(); updateStaffQueue(); updateAdminShellButtons(); updateNowControl(); updateLastRound(); }
     else if (state.view === 'waiter') { root.innerHTML = viewWaiter(); updateStaffSeats(); updateStaffQueue(); updateNowLine(); }
     else root.innerHTML = `<div class="kw-wrap"><div style="padding:60px 0;color:var(--fog);font-family:'Space Mono',monospace;">Cargando…</div></div>`;
 
@@ -1748,6 +1815,7 @@ html, body { margin: 0; padding: 0; background: #000; }
         </div>
       </div>
       <div class="kw-now-card" id="kw-now-card"></div>
+      <div class="kw-lastround" id="kw-lastround-zone"></div>
       <div class="kw-section-title"><h2>🍽️ Mesas</h2></div>
       <div class="kw-grid" id="kw-mesas-grid"></div>
       <div class="kw-section-title"><h2>🍹 Barra</h2></div>
